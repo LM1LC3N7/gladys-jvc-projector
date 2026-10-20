@@ -1,67 +1,128 @@
-# Template de démonstration
+# Projecteurs JVC pour Gladys
 
-Ceci est la documentation utilisateur de l'intégration. Gladys ré-héberge ce
-fichier et affiche un lien **Documentation** permanent vers lui dans l'écran
-de configuration (dans la langue de l'utilisateur, avec l'anglais en repli) —
-c'est au moment de configurer que l'utilisateur en a le plus besoin. Gardez
-les courtes indications d'accueil dans les blocs `section` du `config_schema`
-du manifest ; mettez ici le pas-à-pas détaillé (captures d'écran, dépannage…).
+Pilotez vos vidéoprojecteurs **JVC D-ILA** (séries DLA-NZ, NX, N, X, RS et
+Z, modèles depuis 2012) depuis Gladys, en local, sans aucun cloud :
+allumage, veille, entrée, mode d'image, touches de télécommande, signal et
+heures de lampe / laser.
+
+> **Important.** Cette intégration n'a jamais été testée avec un vrai
+> projecteur : elle a été écrite d'après la bibliothèque `pyjvcprojector`
+> (celle de Home Assistant) et testée avec un faux projecteur seulement. Vos
+> retours sont les bienvenus. Intégration non officielle, sans lien avec
+> JVCKENWOOD.
+
+## Installation
+
+1. Branchez le projecteur sur votre réseau (prise LAN) et donnez-lui une
+   **adresse IP fixe** dans votre box (bail DHCP réservé), ou réglez-en une
+   dans son menu Réseau.
+2. Pour le piloter **en veille**, gardez son réseau actif en veille : réglez
+   le **mode ECO** sur Arrêt (sinon il quitte le réseau en veille, et seule
+   la télécommande peut l'allumer).
+3. Les modèles récents (depuis 2024, et certains après une mise à jour)
+   exigent un **mot de passe réseau** réglé dans le menu Réseau du
+   projecteur : saisissez-le dans la configuration. Les modèles plus anciens
+   n'en ont pas : laissez le champ vide.
+4. Dans Gladys, installez l'intégration **JVC Projector**, ouvrez sa
+   configuration et saisissez les adresses IP, séparées par des virgules
+   (par exemple `192.168.1.50` ; port 20554 par défaut, un autre sous la
+   forme `192.168.1.50:20555`).
+5. Les projecteurs apparaissent dans l'onglet **Découverte** : créez-les.
+
+La première fois, le projecteur doit être allumé, ou en veille avec son
+réseau actif : l'intégration lit son modèle et son adresse MAC, qui
+l'identifie ensuite (son adresse peut changer : saisissez la nouvelle).
 
 ## Ce que vous obtenez
 
-Six appareils de démonstration apparaissent après l'installation : une
-station météo (vraies données Open-Meteo), un interrupteur, une lampe
-variable, une prise connectée avec mesure de puissance, un détecteur de
-mouvement et une caméra.
+| Fonction             | Type Gladys                  | Remarque                                                                    |
+| -------------------- | ---------------------------- | --------------------------------------------------------------------------- |
+| Marche               | état binaire (lecture seule) | 1 allumé ou en préchauffage, 0 veille, refroidissement, erreur, injoignable |
+| État de marche       | texte (lecture seule)        | en anglais : On, Warming up, Cooling down, Standby, Error, Not reachable    |
+| Allumer              | bouton                       | envoyé seulement en veille                                                  |
+| Veille               | bouton                       | envoyé allumé ; en préchauffage, envoyé dès que le projecteur est allumé    |
+| Entrée               | liste                        | HDMI 1, HDMI 2                                                              |
+| Mode d'image         | liste                        | les modes de votre modèle (Film, Cinema, Natural, HDR10, User 1…)           |
+| Touche               | liste                        | Menu, flèches, OK, Retour, Info, réglage de l'objectif, Mode 1 à 10…        |
+| Signal               | état binaire (lecture seule) | 1 quand l'entrée reçoit un signal                                           |
+| Heures lampe / laser | durée en heures              | lues quand le projecteur est allumé                                         |
 
-## Configuration
+Volontairement, aucun **interrupteur** : un « éteins tout » ou « allume
+tout » d'un assistant vocal ou d'une scène n'allume ni n'éteint jamais votre
+projecteur. Utilisez les deux boutons dans vos scènes.
 
-1. Ouvrez l'onglet **Configuration** de l'intégration.
-2. Renseignez la **latitude** et la **longitude** que la station météo de
-   démonstration doit observer (Paris par défaut), et choisissez votre unité
-   de température. L'**intervalle de rafraîchissement** règle la fréquence
-   de lecture de la station météo et de la puissance de la prise : toutes
-   les 5 minutes par défaut, toutes les minutes au plus.
-3. Enregistrez : les appareils apparaissent dans l'onglet **Découverte**,
-   prêts à être ajoutés.
+L'entrée, le mode d'image et le signal sont lus quand le projecteur est
+allumé (le mode d'image seulement avec un signal, comme Home Assistant). La
+liste des modes d'image suit le modèle que donne le projecteur ; un modèle
+inconnu de l'intégration n'en propose aucun.
 
-Le réglage **Préférer la connexion locale** pilote la prise de
-démonstration : elle affiche en badge le canal réellement utilisé (local ou
-cloud), avec un point orange quand elle fonctionne en mode dégradé (local
-refusé, bascule cloud).
+## Commandes
 
-## Actions
+L'état de marche est relu sur le projecteur juste avant chaque commande :
 
-- **Tester le fournisseur météo** — effectue une requête en direct vers
-  Open-Meteo et affiche la température et l'humidité actuelles sous le
-  bouton.
-- **Identifier un appareil** — choisissez un de vos appareils dans la liste
-  et il se signale (la lampe de démonstration « clignote » dans les logs).
+- **Allumer** n'est envoyé qu'en veille. Déjà allumé ou en préchauffage :
+  rien à faire. En **refroidissement**, le projecteur le refuse : la commande
+  est refusée, rien n'est envoyé ; réessayez une fois en veille.
+- **Veille** n'est envoyé que projecteur allumé. Déjà en veille ou en
+  refroidissement : rien à faire. En **préchauffage**, le projecteur
+  l'ignore : l'intégration l'envoie dès qu'il est allumé (dans les 3
+  minutes) ; un appui sur Allumer entre-temps l'annule. La veille n'est
+  jamais refusée faute d'avoir pu lire l'état : elle est alors envoyée
+  quand même, et passe avant les autres commandes en attente.
+- **Entrée**, **mode d'image** et **touche** ne sont envoyés que projecteur
+  allumé.
 
-## Scènes
+Chaque commande reçoit une réponse en moins de 4 secondes (Gladys attend 5
+secondes). Une commande partie sans confirmation du projecteur à temps est
+signalée « envoyée, sans confirmation » (un changement d'entrée peut prendre
+jusqu'à 10 secondes sur le projecteur) ; une commande qui n'a pas pu partir
+est signalée « rien envoyé ». L'état est relu 3 secondes après chaque
+commande.
 
-L'intégration ajoute ses propres cartes à l'éditeur de scènes (Gladys 5.1
-ou plus récent), dans la catégorie **Intégrations** :
+## Mot de passe réseau
 
-- **Mouvement détecté** (déclencheur) — lance la scène quand un détecteur
-  de démonstration voit bouger quelque chose. Choisissez éventuellement le
-  détecteur et ce qui a bougé (personne, animal) ; laissés vides, toute
-  détection correspond. Les actions suivantes peuvent lire ce qui a bougé
-  avec `{{triggerEvent.data.target}}`.
-- **Identifier un appareil** (action) — fait se signaler l'appareil choisi.
-  Elle indique si l'appareil a pu se signaler, pour que les actions
-  suivantes puissent en dépendre.
+Le mot de passe est gardé par Gladys dans sa base, jamais réaffiché, et
+envoyé seulement aux projecteurs, au début de chaque connexion (complété
+comme l'attendent les anciens modèles, puis sous la forme SHA-256 des
+modèles récents si la première est refusée, comme le fait
+`pyjvcprojector`). L'intégration ne l'écrit jamais dans son dossier de
+données, ni dans ses journaux, statuts ou messages d'erreur.
 
-## Tableau de bord
+Un **mot de passe refusé** arrête les essais vers ce projecteur : le statut
+de l'intégration l'indique, et le mot de passe n'est réessayé qu'à
+l'enregistrement de la configuration, ou 30 minutes plus tard (jamais en
+boucle). Corrigez-le dans le menu Réseau du projecteur ou dans la
+configuration, puis enregistrez.
 
-Ajoutez le widget **État de la démo** à un tableau de bord : il affiche en
-direct la température de la station météo et la puissance de la prise du
-bureau, la connexion utilisée par la prise (en orange si dégradée) et la
-position observée. Son bouton **Identifier la lampe** fait se signaler la
-lampe de démonstration.
+## Bouton de la configuration
 
-## Dépannage
+- **Vérifier les projecteurs** : lit chaque projecteur tout de suite (marche,
+  heures de lampe) et rappelle l'intervalle de rafraîchissement.
 
-L'intégration journalise tout ce qu'elle fait : consultez les logs de
-l'intégration depuis l'interface Gladys (ou `docker logs` sur l'hôte) avec
-`LOG_LEVEL=debug` pour le détail complet.
+## Rafraîchissement, statut et limites
+
+- L'état de chaque projecteur est lu toutes les 15 secondes par défaut (10 à
+  300), en une courte connexion (le projecteur n'accepte qu'un client à la
+  fois : fermez l'application JVC ou un autre pilote s'il se dit « occupé »).
+- Un projecteur qui ne répond pas affiche la marche à 0 et « Not
+  reachable », et est cité dans le statut de l'intégration ; il est redemandé
+  à chaque rafraîchissement, jamais plus vite.
+- Si un autre projecteur répond à l'adresse d'un projecteur créé (adresse
+  changée), son adresse est oubliée et il n'est jamais commandé là :
+  saisissez sa nouvelle adresse.
+
+## Données et confidentialité
+
+L'intégration garde dans `/data/jvc-projector.json` les projecteurs connus
+(adresse MAC, adresse, port, modèle, modes d'image) et les adresses dont le
+mot de passe a été refusé, avec l'heure du prochain essai. Rien ne sort de
+votre réseau local.
+
+## Limites connues
+
+- HDMI 1 et HDMI 2 seulement (les entrées que connaît `pyjvcprojector`).
+- Pas encore de mémoires d'objectif, de puissance laser, de mode
+  d'installation, d'anamorphose ni de réglages HDR.
+- Un seul mot de passe pour tous les projecteurs.
+- Jamais testé avec un vrai projecteur : les réponses réelles peuvent
+  différer.

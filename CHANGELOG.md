@@ -12,44 +12,28 @@ the notes of the version's GitHub Release.
 
 ### Added
 
-- A working example of scene triggers, scene actions and dashboard widgets
-  (Gladys 5.1.0 or later).
-- `CHANGELOG.md`, rolled by the Release workflow.
-- A GitHub Release for every version, with its changelog section as notes: the
-  Gladys Supervision page links each version to the repository's releases.
-- CI runs the tests on Node 22 and 24, and builds the Docker image.
-- Dependabot keeps the npm dependencies and the GitHub Actions up to date.
-- `SECURITY.md` (how to report a vulnerability) and `CLAUDE.md` (project rules
-  for contributors and coding assistants).
-- Manifest tests: `version` matches `package.json`, `docker_image` is tagged
-  with it, descriptions hold 10 to 100 characters, placeholders are
-  multi-language objects.
-- The latitude and longitude fields show an example value as placeholder.
+- JVC D-ILA projectors over their local network protocol (TCP 20554), without
+  any cloud: added by IP address, identified by their MAC address, their
+  model giving the picture modes offered.
+- Power state (read only) and power status (On, Warming up, Cooling down,
+  Standby, Error, Not reachable), "Power on" and "Standby" buttons (no
+  switch), input (HDMI 1, HDMI 2), picture mode, remote keys, signal, and
+  lamp / laser hours.
+- Power on is sent from standby only, standby when on only; a standby asked
+  while warming up is sent once the projector is on (Power on cancels it),
+  and standby goes before the commands waiting. Every command is answered to
+  Gladys within 4 seconds: "sent, without confirmation" when it may have
+  reached the projector, "nothing sent" otherwise.
+- Optional network password of the projectors (padded plain form, then
+  SHA-256 form), never logged nor written to `/data`; a refused password
+  stops the tries until the configuration is saved again or 30 minutes have
+  passed.
+- "Check the projectors" button; refresh interval option (15 s by default).
 
-### Changed
+### Security
 
-- Node.js 22 or later is required (Node 20 is end-of-life).
-- Integration SDK 0.15.0. The tests now run against the fake Gladys of the
-  SDK, which refuses the payloads Gladys refuses.
-- The refresh interval is one minute minimum, the fastest Gladys polls a
-  device. The plug's power is only sent when it changes, and every 30
-  minutes otherwise.
+- Answers bounded (512 bytes buffered, one line per answer, printable values
+  of 64 characters at most) and matched against the expected header; only
+  MAC addresses are keys in `/data`, and its tables have no prototype.
 
-### Fixed
-
-- Gladys refused the devices of the Discovery tab: the weather station and
-  the plug declared their poll frequency in seconds instead of one of the
-  values Gladys accepts, and were never polled. They now poll every minute,
-  and the readings follow the refresh interval of the configuration.
-
-- The release commit no longer fails `npm run format:check`: the Release
-  workflow updates the manifest `version` and `docker_image` in place instead
-  of re-printing the whole file with `jq`.
-- The integration can write to `/data`: the image creates the directory owned
-  by the `node` user, a new Docker volume was owned by root.
-- A sub-container running the integration's own image follows it to the new
-  tag at each release, as well as in the manifest of the build summary: it kept
-  the previous tag, which may not exist on the registry. Sub-containers on a
-  third-party image (a broker, a database...) keep theirs.
-
-[Unreleased]: https://github.com/GladysAssistant/integration-template-js/commits/main
+[Unreleased]: https://github.com/LM1LC3N7/gladys-jvc-projector/commits/main
