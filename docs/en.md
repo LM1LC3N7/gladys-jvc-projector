@@ -55,17 +55,23 @@ not know offers no picture mode.
 
 ## Commands
 
-The power state is read from the projector just before each command:
+The MAC address and the power state are read from the projector just before
+each command (another projector at the address: nothing is sent, and the
+address is forgotten):
 
 - **Power on** is only sent in standby. Already on or warming up: nothing
   to do. While **cooling down**, the projector refuses it: the command is
   refused, nothing sent; try again once it is in standby.
 - **Standby** is only sent when on. Already in standby or cooling down:
-  nothing to do. While **warming up**, the projector ignores it: the
-  integration sends it as soon as the projector is on (within 3 minutes);
-  pressing Power on meanwhile cancels it. Standby is never refused because
-  the state could not be read: it is then sent anyway, and goes before the
-  other commands waiting.
+  nothing to do. While **warming up**, the projector ignores it: Gladys gets
+  the answer "warming up: standby will be sent once it is on, nothing sent
+  yet", and the integration sends it as soon as the projector is on (checked
+  every 5 seconds, within 3 minutes, a failed read included); pressing
+  Power on meanwhile cancels it. Standby is never refused because the state
+  could not be read: it is then sent anyway. It goes before the other
+  commands waiting, and never waits behind a background read or the slow
+  confirmation of an input or picture mode change (that connection is
+  closed; the change stays "sent, without confirmation").
 - **Input**, **picture mode** and **remote key** are only sent when the
   projector is on.
 
@@ -85,7 +91,9 @@ writes it to its data folder, nor to its logs, statuses or error messages.
 
 A **refused password** stops the tries to that projector: the integration
 status says so, and the password is tried again only when you save the
-configuration, or 30 minutes later (never in a loop). Fix it in the
+configuration, or 30 minutes later (never in a loop). A projector that
+closes the connection or stops answering after refusing a password counts
+as a refusal too. Fix it in the
 projector's Network menu or in the configuration, then save.
 
 ## Configuration button

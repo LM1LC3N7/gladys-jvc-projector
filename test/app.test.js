@@ -202,7 +202,9 @@ test('Standby while warming up is sent once the projector is on; Power on cancel
   await press(gladys, device, 'power_on');
   await waitFor(() => fake.power === '3', 'warming up');
   const ack = await press(gladys, device, 'standby');
-  assert.equal(ack.success, true, ack.error);
+  // Not done yet: said so, never answered as a plain success.
+  assert.equal(ack.success, false);
+  assert.match(ack.error, /warming up: standby will be sent once it is on, nothing sent yet/);
   assert.equal(fake.ops().length, 1, 'not sent while warming up');
   await waitFor(() => fake.ops().length === 2, 'the deferred standby');
   assert.deepEqual(fake.ops()[1], { kind: 'op', code: 'PW', value: '0' });
@@ -482,4 +484,189 @@ test('/data keeps the projectors and the picture modes; a restart starts from th
   assert.equal(saved.port, fake.port);
   assert.ok(saved.pictureOptions.some((o) => o.value === 'film'));
   assert.equal(Object.getPrototypeOf(app.data.projectors), null);
+});
+
+// --- Review 1 ------------------------------------------------------------------------
+
+/** A server that greets, answers the first request with PJNAK, then `after(socket)`. */
+async function nakServer(t, after) {
+  const server = net.createServer((socket) => {
+    server.requests += 1;
+    socket.on('error', () => {});
+    socket.write('PJ_OK');
+    socket.once('data', () => after(socket));
+  });
+  server.requests = 0;
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  return server;
+}
+
+test('I1 standby pressed during the slow ack of an input change goes out at once', async (t) => {
+  const { gladys, fake } = await setup(t, {
+    fakeOptions: { power: '1', opAck: { IP: 'never' } },
+    timings: { slowAckTimeout: 2_500 },
+  });
+  const device = await createDevice(gladys);
+  const input = press(gladys, device, 'input', 'hdmi2');
+  await waitFor(() => fake.ops().length === 1, 'the input frame');
+  await settle(100);
+  const started = Date.now();
+  const standby = await press(gladys, device, 'standby');
+  assert.equal(standby.success, true, standby.error);
+  assert.ok(Date.now() - started < FAST.commandBudget + 200);
+  assert.deepEqual(fake.ops().at(-1), { kind: 'op', code: 'PW', value: '0' });
+  const inputAck = await input;
+  assert.equal(inputAck.success, false);
+  assert.match(inputAck.error, /Sent, without confirmation/);
+});
+
+test('I1 standby closes a background read instead of waiting behind it', async (t) => {
+  const { gladys, fake, app } = await setup(t, { fakeOptions: { power: '1' } });
+  const device = await createDevice(gladys);
+  fake.refSilent = { SC: 'never' };
+  const round = app.poll();
+  await waitFor(() => fake.received.filter((r) => r.code === 'SC').length > 0, 'a stuck read');
+  fake.refSilent = {};
+  const standby = await press(gladys, device, 'standby');
+  assert.equal(standby.success, true, standby.error);
+  assert.deepEqual(fake.ops().at(-1), { kind: 'op', code: 'PW', value: '0' });
+  await round;
+});
+
+test('I2 a deferred standby keeps one chain, whatever the rounds', async (t) => {
+  const { gladys, fake, app } = await setup(t, {
+    fakeOptions: { power: '0', warmMs: 2_500 },
+    timings: { deferredStep: 200, deferredStandby: 10_000 },
+  });
+  const device = await createDevice(gladys);
+  await press(gladys, device, 'power_on');
+  await waitFor(() => fake.power === '3', 'warming up');
+  await press(gladys, device, 'standby');
+  const reads = () => fake.received.filter((r) => r.code === 'PW' && r.kind === 'ref').length;
+  const before = reads();
+  const start = Date.now();
+  for (let i = 0; i < 6; i += 1) {
+    await app.poll();
+    await settle(50);
+  }
+  await settle(1_200 - (Date.now() - start));
+  // 6 rounds + one chain at 200 ms (+ the recheck of Power on): about 13.
+  assert.ok(reads() - before <= 15, `${reads() - before} reads`);
+});
+
+test('I3 a failed read while warming up keeps the deferred standby', async (t) => {
+  const { gladys, fake } = await setup(t, {
+    fakeOptions: { power: '0', warmMs: 1_000 },
+    timings: { deferredStep: 100, deferredStandby: 5_000 },
+  });
+  const device = await createDevice(gladys);
+  await press(gladys, device, 'power_on');
+  await waitFor(() => fake.power === '3', 'warming up');
+  await press(gladys, device, 'standby');
+  fake.mode = 'busy';
+  await settle(250);
+  fake.mode = 'ok';
+  await waitFor(
+    () => fake.ops().some((o) => o.code === 'PW' && o.value === '0'),
+    'the deferred standby',
+    4_000,
+  );
+});
+
+for (const [name, after] of [
+  ['closed', (socket) => socket.end('PJNAK')],
+  ['silent', (socket) => socket.write('PJNAK')],
+]) {
+  test(`I4 PJNAK then ${name}: a refusal, persisted, never sent again`, async (t) => {
+    const server = await nakServer(t, after);
+    const key = `127.0.0.1:${server.address().port}`;
+    const store = new MemoryStore();
+    const gladys = createFakeGladys({
+      selector: SELECTOR,
+      config: { addresses: key, password: 'wrong' },
+    });
+    const app = new JvcApp({ gladys, logger: QUIET, store, timers, timings: FAST });
+    registerHandlers(gladys, app);
+    t.after(() => app.stop());
+    await gladys.connect();
+    await waitFor(() => Object.hasOwn(app.data.authRefused, key), 'the refusal');
+    assert.equal(app.probeErrors.get(key), 'auth');
+    const sent = server.requests;
+    for (let i = 0; i < 3; i += 1) {
+      app.probes.clear();
+      await app.tick();
+    }
+    assert.equal(server.requests, sent, 'not tried again before 30 minutes');
+    await settle(30);
+    assert.ok(store.data.authRefused[key] > Date.now() + 29 * 60_000);
+    assert.equal(gladys.fake.connectionStatus.connected, false);
+  });
+}
+
+test('I5 another projector at the address between two rounds: nothing published for it, nothing sent', async (t) => {
+  const { gladys, app } = await setup(t, { fakeOptions: { power: '1' } });
+  await createDevice(gladys);
+  const other = await startFakeProjector({ mac: 'AABBCCDDEEFF', power: '0' });
+  t.after(() => other.close());
+  // No "not reachable" round in between.
+  app.data.projectors[MAC_ID].port = other.port;
+  await app.poll();
+  assert.equal(gladys.fake.lastState(id('power_status')), 'Not reachable');
+  assert.ok(!gladys.fake.states.some((s) => s.text === 'Standby'));
+  assert.equal(app.data.projectors[MAC_ID].host, '');
+  assert.equal(other.ops().length, 0);
+});
+
+test('I5 a command checks the MAC in its own session', async (t) => {
+  const { gladys, app } = await setup(t, { fakeOptions: { power: '1' } });
+  const device = await createDevice(gladys);
+  const other = await startFakeProjector({ mac: 'AABBCCDDEEFF', power: '0' });
+  t.after(() => other.close());
+  app.data.projectors[MAC_ID].port = other.port;
+  for (const key of ['power_on', 'standby']) {
+    const ack = await press(gladys, device, key);
+    assert.equal(ack.success, false, key);
+    assert.match(ack.error, /another projector answers at its address|address unknown/);
+    assert.match(ack.error, /nothing sent/);
+  }
+  assert.equal(other.ops().length, 0);
+  assert.equal(app.data.projectors[MAC_ID].host, '');
+});
+
+test('M1 a reconnection keeps the round timer; M2 two starts load /data once', async (t) => {
+  const fake = await startFakeProjector({ power: '1' });
+  t.after(() => fake.close());
+  let intervals = 0;
+  const counting = { ...timers, setInterval: () => (intervals += 1) };
+  const gladys = createFakeGladys({ selector: SELECTOR, config: {} });
+  let loads = 0;
+  const store = new MemoryStore();
+  const load = store.load.bind(store);
+  store.load = async (options) => {
+    loads += 1;
+    await settle(20);
+    return load(options);
+  };
+  const app = new JvcApp({ gladys, logger: QUIET, store, timers: counting, timings: FAST });
+  t.after(() => app.stop());
+  const config = { addresses: `127.0.0.1:${fake.port}` };
+  await Promise.all([app.start(config, { connected: true }), app.start(config, { saved: true })]);
+  assert.equal(loads, 1);
+  assert.equal(app.projectors.length, 1, 'the projector found is kept');
+  await app.start(config, { connected: true });
+  await app.start(config, { connected: true });
+  assert.equal(intervals, 1, 'the timer is not restarted');
+  await app.start({ ...config, poll_interval: 60 }, { saved: true });
+  assert.equal(intervals, 2, 'a new interval restarts it');
+});
+
+test('M5 a refusal for an address no longer in use is forgotten', async (t) => {
+  const store = new MemoryStore();
+  store.data.authRefused = { '10.9.9.9': Date.now() + 60_000 };
+  const { gladys } = await setup(t, { fakeOptions: { power: '1' }, store });
+  await discovered(gladys);
+  await waitFor(() => gladys.fake.connectionStatus?.connected === true, 'connected');
+  await settle(30);
+  assert.deepEqual(store.data.authRefused, {});
 });

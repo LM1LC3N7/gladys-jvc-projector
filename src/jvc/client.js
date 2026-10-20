@@ -236,6 +236,11 @@ export class Session {
   }
 }
 
+const refusedMessage = (password) =>
+  password
+    ? 'The projector refused the password'
+    : 'The projector asks for a password (network password set on the projector)';
+
 function connect({ host, port, timeout, createConnection }) {
   return new Promise((resolve, reject) => {
     if (timeout <= 0) {
@@ -297,6 +302,7 @@ export async function openSession({
     createConnection,
   });
   const session = new Session(socket, { readTimeout, deadline, now, spacing });
+  let nak = false;
   try {
     const hello = (await session.readBytes(HANDSHAKE_LENGTH, session.left(), 'greeting')).toString(
       'latin1',
@@ -330,15 +336,16 @@ export async function openSession({
       if (answer !== HANDSHAKE.NAK) {
         throw new JvcError(ERROR_KINDS.PROTOCOL, 'Unexpected handshake answer');
       }
+      nak = true;
     }
-    throw new JvcError(
-      ERROR_KINDS.AUTH,
-      password
-        ? 'The projector refused the password'
-        : 'The projector asks for a password (network password set on the projector)',
-    );
+    throw new JvcError(ERROR_KINDS.AUTH, refusedMessage(password));
   } catch (err) {
     session.close();
+    if (nak && err.kind !== ERROR_KINDS.AUTH) {
+      // A PJNAK was received: whatever ends the handshake after it (closed,
+      // silence, garbage) is a refusal, never a busy projector tried again.
+      throw new JvcError(ERROR_KINDS.AUTH, refusedMessage(password));
+    }
     if (err.kind === ERROR_KINDS.CLOSED && session.buffer.length === 0) {
       // Closed before or during the handshake: some models close at once
       // when another client is connected.

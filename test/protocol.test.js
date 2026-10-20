@@ -89,6 +89,10 @@ test('answers parsed strictly', () => {
   assert.equal(parseMac('E0-DA-DC-0A-15-62'), 'e0dadc0a1562');
   assert.equal(parseMac('E0DADC0A15'), undefined);
   assert.equal(parseMac('__proto__'), undefined);
+  // No identity: all zeros, broadcast, multicast.
+  assert.equal(parseMac('000000000000'), undefined);
+  assert.equal(parseMac('FFFFFFFFFFFF'), undefined);
+  assert.equal(parseMac('01005E000001'), undefined);
 });
 
 test('models: exact name, then the first 3 characters, else none', () => {

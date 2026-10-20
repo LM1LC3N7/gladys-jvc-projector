@@ -30,6 +30,25 @@ the notes of the version's GitHub Release.
   passed.
 - "Check the projectors" button; refresh interval option (15 s by default).
 
+### Fixed
+
+- Standby no longer waits behind the slow confirmation of an input or
+  picture mode change, nor behind a background read: that connection is
+  closed and standby goes out at once.
+- A standby deferred during the warm-up keeps a single check chain (the
+  rounds no longer add one each), survives a failed read, and is answered
+  "warming up: standby will be sent once it is on, nothing sent yet" instead
+  of a plain success.
+- A password refusal followed by a closed connection or silence counts as a
+  refusal (persisted, never sent again before 30 minutes), not as "busy".
+- The MAC address is read at every background read and before every
+  command: a projector whose address went to another one is never read nor
+  commanded there.
+- Reconnections to Gladys no longer restart the round timer; two starts at
+  once load `/data` once; an all-zero, broadcast or multicast MAC is no
+  identity; a refused password for an address no longer in use no longer
+  keeps the integration disconnected.
+
 ### Security
 
 - Answers bounded (512 bytes buffered, one line per answer, printable values

@@ -115,6 +115,10 @@ export class JvcApp {
     this.deferred = new Map();
     /** addressKeys with a background read queued */
     this.readQueued = new Set();
+    /** addressKey -> the session open there (`preemptible`: a standby may close it) */
+    this.activeSessions = new Map();
+    this.loading = undefined;
+    this.pollTimerInterval = undefined;
     this.backgroundTimers = new Set();
     this.generation = 0;
     this.pollTimer = undefined;
@@ -137,23 +141,24 @@ export class JvcApp {
   async start(raw = {}, { connected = false, saved = false } = {}) {
     this.config = normalizeConfig(raw);
     this.started = true;
-    this.timers.clearInterval(this.pollTimer);
-    this.pollTimer = this.timers.setInterval(() => this.tick(), this.config.pollInterval * 1000);
+    // The round timer is kept while its interval does not change: frequent
+    // reconnections to Gladys never starve the rounds.
+    if (this.pollTimer === undefined || this.pollTimerInterval !== this.config.pollInterval) {
+      this.timers.clearInterval(this.pollTimer);
+      this.pollTimer = this.timers.setInterval(() => this.tick(), this.config.pollInterval * 1000);
+      this.pollTimerInterval = this.config.pollInterval;
+    }
     if (connected) {
       this.lastStatus = undefined;
       this.gladys.forgetPublishedStates?.();
     }
     let first = false;
     if (!this.data) {
-      first = true;
-      try {
-        this.data = await this.store.load({ now: this.now(), maxDelay: this.timings.authRetry });
-      } catch {
-        this.data = emptyData();
-      }
-      if (this.store.corrupted) {
-        this.logger.warn('Unreadable /data/jvc-projector.json moved to jvc-projector.json.bad');
-      }
+      // Two starts at once (connected + configuration saved) share one load.
+      const mine = !this.loading;
+      this.loading ??= this.load();
+      await this.loading;
+      first = mine;
     }
     if (saved) {
       if (Object.keys(this.data.authRefused).length > 0) {
@@ -171,6 +176,19 @@ export class JvcApp {
     await this.step('publish the status', () => this.updateStatus());
   }
 
+  async load() {
+    let data;
+    try {
+      data = await this.store.load({ now: this.now(), maxDelay: this.timings.authRetry });
+    } catch {
+      data = emptyData();
+    }
+    if (this.store.corrupted) {
+      this.logger.warn('Unreadable /data/jvc-projector.json moved to jvc-projector.json.bad');
+    }
+    this.data = data;
+  }
+
   async step(name, task) {
     try {
       await task();
@@ -184,6 +202,7 @@ export class JvcApp {
     this.generation += 1;
     this.timers.clearInterval(this.pollTimer);
     this.pollTimer = undefined;
+    this.pollTimerInterval = undefined;
     for (const handle of this.backgroundTimers) {
       this.timers.clearTimeout(handle);
     }
@@ -258,6 +277,15 @@ export class JvcApp {
       const item = { task, resolve, reject, priority };
       const index = queue.items.findIndex((i) => i.priority > priority);
       queue.items.splice(index === -1 ? queue.items.length : index, 0, item);
+      if (priority === PRIORITY.STANDBY) {
+        // Standby never waits behind a background read, nor behind a command
+        // whose frame already left and only waits for its (slow) ack: that
+        // session is closed, its command stays "sent, without confirmation".
+        const active = this.activeSessions.get(key);
+        if (active?.preemptible) {
+          active.fail(new JvcError(ERROR_KINDS.CLOSED, 'Connection closed for a standby'));
+        }
+      }
       this.drain(queue);
     });
   }
@@ -301,7 +329,7 @@ export class JvcApp {
    * before `deadline`. Connections are spaced by `connectSpacing`. A refused
    * password is not sent again before its retry time.
    */
-  async withSession(address, deadline, task) {
+  async withSession(address, deadline, task, { preemptible = false } = {}) {
     const key = addressKey(address);
     if (this.authRefusedAt(key)) {
       throw new JvcError(
@@ -347,10 +375,16 @@ export class JvcApp {
       this.logger.info(`${key}: password accepted again`);
       this.updateStatus().catch(() => {});
     }
+    const session = opened.session;
+    session.preemptible = preemptible;
+    this.activeSessions.set(key, session);
     try {
-      return await task(opened.session);
+      return await task(session);
     } finally {
-      opened.session.close();
+      session.close();
+      if (this.activeSessions.get(key) === session) {
+        this.activeSessions.delete(key);
+      }
     }
   }
 
@@ -601,7 +635,6 @@ export class JvcApp {
     if (!projector.host) {
       return null;
     }
-    const before = this.readings.get(projector.mac);
     const address = this.addressOf(projector);
     let reading;
     try {
@@ -609,12 +642,11 @@ export class JvcApp {
         address,
         this.now() + this.timings.pollBudget,
         async (session) => {
-          if (!before) {
-            // Back (or first) online: the address must still be this projector's.
-            const mac = parseMac(await session.ref(CODES.MAC));
-            if (mac !== projector.mac) {
-              return { otherMac: mac };
-            }
+          // Every read starts with the MAC: the address must still be this
+          // projector's (DHCP), whatever was read before.
+          const mac = parseMac(await session.ref(CODES.MAC));
+          if (mac !== projector.mac) {
+            return { otherMac: mac };
           }
           const power = parsePower(await session.ref(CODES.POWER));
           if (!power) {
@@ -638,6 +670,7 @@ export class JvcApp {
           }
           return result;
         },
+        { preemptible: true },
       );
     } catch (err) {
       reading = err.kind === ERROR_KINDS.UNREACHABLE ? null : undefined;
@@ -646,13 +679,8 @@ export class JvcApp {
       }
     }
     if (reading && 'otherMac' in reading) {
-      // Its address went to another projector (DHCP): never commanded there.
-      this.logger.warn(`${deviceName(projector)}: another projector answers at ${projector.host}`);
-      projector.host = '';
-      this.persist();
+      this.addressLost(projector, address);
       reading = null;
-      // When it is a typed address, it is identified again at the next round.
-      this.probes.delete(addressKey(address));
     }
     // An unknown answer keeps what was known.
     if (reading !== undefined) {
@@ -661,6 +689,34 @@ export class JvcApp {
     await this.publishStates(projector);
     this.followDeferred(projector, reading);
     return reading;
+  }
+
+  /** Its address went to another projector (DHCP): never commanded there again. */
+  addressLost(projector, address) {
+    this.logger.warn(
+      `${deviceName(projector)}: another projector answers at ${addressKey(address)}`,
+    );
+    projector.host = '';
+    this.readings.set(projector.mac, null);
+    this.persist();
+    // When it is a typed address, it is identified again at the next round.
+    this.probes.delete(addressKey(address));
+  }
+
+  /** Reads the MAC in a command session; another projector there: nothing sent. */
+  async checkMac(session, projector, address, until) {
+    const mac = parseMac(await session.ref(CODES.MAC, { until }));
+    if (mac !== projector.mac) {
+      this.addressLost(projector, address);
+      this.publishStates(projector).catch(() => {});
+      this.updateStatus().catch(() => {});
+      const err = new JvcError(
+        ERROR_KINDS.PROTOCOL,
+        `${deviceName(projector)}: another projector answers at its address, ${NOTHING_SENT}`,
+      );
+      err.lost = true;
+      throw err;
+    }
   }
 
   async publishStates(projector) {
@@ -702,12 +758,20 @@ export class JvcApp {
     this.deferred.delete(projector.mac);
   }
 
+  /**
+   * One timer per entry: reads made meanwhile (rounds, rechecks) never start
+   * another chain.
+   */
   scheduleDeferred(projector, entry) {
+    if (entry.timer) {
+      return;
+    }
+    entry.timer = true;
     this.later(() => {
+      entry.timer = false;
       if (this.deferred.get(projector.mac) !== entry) {
         return undefined;
       }
-      // A failed read stops the chain: the polling rounds take over.
       return this.queueRead(projector);
     }, this.timings.deferredStep);
   }
@@ -733,9 +797,10 @@ export class JvcApp {
       ).catch((err) =>
         this.logger.warn(`${deviceName(projector)}: deferred standby failed (${err.message})`),
       );
-    } else if (power === POWER.WARMING) {
+    } else if (power === POWER.WARMING || reading === undefined) {
+      // Still warming up, or a failed read (busy, timeout): asked again.
       this.scheduleDeferred(projector, entry);
-    } else if (reading !== undefined) {
+    } else {
       // Standby, cooling down, error, not reachable: nothing left to do.
       this.deferred.delete(projector.mac);
     }
@@ -750,6 +815,7 @@ export class JvcApp {
       this.addressOf(projector),
       this.now() + this.timings.commandBudget,
       async (session) => {
+        await this.checkMac(session, projector, this.addressOf(projector), session.deadline);
         const power = parsePower(await session.ref(CODES.POWER));
         if (power === POWER.ON) {
           await session.op(CODES.POWER, POWER_WRITE.off);
@@ -857,8 +923,13 @@ export class JvcApp {
   }
 
   /** The power state read just before acting, within `preRead`. */
-  async readPowerBefore(session, started) {
+  /**
+   * The MAC (the address must still be this projector's) and the power state,
+   * read just before acting, within `preRead`.
+   */
+  async readPowerBefore(session, started, projector, address) {
     const until = Math.min(started + this.timings.commandBudget, this.now() + this.timings.preRead);
+    await this.checkMac(session, projector, address, until);
     return parsePower(await session.ref(CODES.POWER, { until }));
   }
 
@@ -875,8 +946,11 @@ export class JvcApp {
       return this.withSession(address, deadline, async (session) => {
         let power;
         try {
-          power = await this.readPowerBefore(session, started);
+          power = await this.readPowerBefore(session, started, projector, address);
         } catch (err) {
+          if (err.lost) {
+            throw err;
+          }
           throw new JvcError(err.kind, `Power state not read (${err.message})`);
         }
         return this.act(projector, session, key, code, power, context);
@@ -889,8 +963,11 @@ export class JvcApp {
       await this.withSession(address, deadline, async (session) => {
         let power;
         try {
-          power = await this.readPowerBefore(session, started);
-        } catch {
+          power = await this.readPowerBefore(session, started, projector, address);
+        } catch (err) {
+          if (err.lost) {
+            throw err;
+          }
           unread = true;
           return undefined;
         }
@@ -903,7 +980,7 @@ export class JvcApp {
         ERROR_KINDS.PROTOCOL,
         ERROR_KINDS.CLOSED,
       ];
-      if (err.sent || !retryable.includes(err.kind)) {
+      if (err.sent || err.lost || !retryable.includes(err.kind)) {
         throw err;
       }
       unread = true;
@@ -952,9 +1029,12 @@ export class JvcApp {
           return undefined;
         }
         if (power === POWER.WARMING) {
-          // The projector ignores standby while warming up: sent once it is on.
+          // The projector ignores standby while warming up: sent once it is
+          // on. Not done yet, so not answered as a success.
           this.deferStandby(projector);
-          return undefined;
+          throw new Error(
+            `${name} is warming up: standby will be sent once it is on, ${NOTHING_SENT} yet`,
+          );
         }
         await send(CODES.POWER, POWER_WRITE.off);
         return undefined;
@@ -962,9 +1042,13 @@ export class JvcApp {
         if (power !== POWER.ON) {
           throw new Error(`${name} is not on (${power ?? 'unknown'})`);
         }
+        // Slow acks (up to 10 s): once the frame left, a standby may close
+        // the session instead of waiting behind it.
         if (key === FEATURES.INPUT) {
+          session.preemptible = true;
           await send(CODES.INPUT, code, this.timings.slowAckTimeout);
         } else if (key === FEATURES.PICTURE_MODE) {
+          session.preemptible = true;
           await send(CODES.PICTURE_MODE, code, this.timings.slowAckTimeout);
         } else {
           await send(CODES.REMOTE, code);
@@ -1051,7 +1135,19 @@ export class JvcApp {
     if (this.config.passwordInvalid) {
       notes.push(T.invalidPassword);
     }
-    // Listed until a try succeeds (or a configuration save), even past the retry time.
+    // Listed until a try succeeds (or a configuration save), even past the
+    // retry time; only for the addresses still in use (typed, or of a created
+    // projector): the others are forgotten.
+    const inUse = new Set([
+      ...this.config.addresses.map(addressKey),
+      ...this.projectors.filter((p) => p.host && this.created.has(p.mac)).map((p) => this.keyOf(p)),
+    ]);
+    for (const key of Object.keys(this.data.authRefused)) {
+      if (!inUse.has(key)) {
+        delete this.data.authRefused[key];
+        this.persist();
+      }
+    }
     const refused = Object.keys(this.data.authRefused);
     if (refused.length > 0) {
       const labels = refused.map((key) => {

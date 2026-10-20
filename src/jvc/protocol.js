@@ -171,8 +171,15 @@ export function parseMac(value) {
   if (typeof value !== 'string') {
     return undefined;
   }
-  const hex = value.replace(/[\s:-]/g, '');
-  return /^[0-9A-Fa-f]{12}$/.test(hex) ? hex.toLowerCase() : undefined;
+  const hex = value.replace(/[\s:-]/g, '').toLowerCase();
+  if (!/^[0-9a-f]{12}$/.test(hex)) {
+    return undefined;
+  }
+  // All zeros, broadcast or multicast: no identity (two projectors would share it).
+  if (hex === '000000000000' || (Number.parseInt(hex.slice(0, 2), 16) & 1) === 1) {
+    return undefined;
+  }
+  return hex;
 }
 
 // --- Remote keys -------------------------------------------------------------------

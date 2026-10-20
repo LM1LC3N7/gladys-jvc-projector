@@ -139,5 +139,29 @@ up to date at the end of every milestone.
   mapped through fixed tables (`Object.hasOwn`); `/data` keys are MAC
   addresses only, the tables have no prototype; picture options are plain
   identifiers.
+- (Review 1, 2026-10-21) Fixes:
+  - I1: each queue knows the session open on its address
+    (`activeSessions`); a standby (or the deferred standby) entering the
+    queue closes it when it is preemptible: a background read, or an input /
+    picture mode change whose frame left and that only waits for its slow
+    ack (that command stays "sent, without confirmation").
+  - I2: one timer per deferred entry (`entry.timer`): reads from rounds,
+    rechecks or device creation never add a chain.
+  - I3: a failed read (unknown) keeps the deferred standby and asks again
+    after `deferredStep`, until its 3 minutes; standby, cooling down, error
+    or not reachable drop it.
+  - I4: once a `PJNAK` was received, any end of the handshake (closed,
+    silence, garbage) is AUTH, so persisted by `markAuthRefused`.
+  - I5: `LSMA` is read at the start of every background read (one more
+    request, ~0.1 s) and before every command, with the power, within
+    `preRead`; another MAC clears the address, publishes "Not reachable"
+    and answers "nothing sent". A standby whose MAC and power could not be
+    read is still sent blind (the protective command, as before).
+  - M1: the round timer is only recreated when `poll_interval` changes.
+    M2: one shared load of `/data`. M3: all-zero, broadcast and multicast
+    MACs are refused. M4: a deferred standby answers Gladys an error saying
+    "standby will be sent once it is on, nothing sent yet" (exact, not a
+    success). M5: refusals of addresses neither typed nor of a created
+    projector are purged at each status update.
 - No network discovery: JVC projectors announce nothing pyjvcprojector or
   Home Assistant browses; the addresses are typed.

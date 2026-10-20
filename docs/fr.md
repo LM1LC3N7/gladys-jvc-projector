@@ -58,17 +58,25 @@ inconnu de l'intégration n'en propose aucun.
 
 ## Commandes
 
-L'état de marche est relu sur le projecteur juste avant chaque commande :
+L'adresse MAC et l'état de marche sont relus sur le projecteur juste avant
+chaque commande (un autre projecteur à l'adresse : rien n'est envoyé, et
+l'adresse est oubliée) :
 
 - **Allumer** n'est envoyé qu'en veille. Déjà allumé ou en préchauffage :
   rien à faire. En **refroidissement**, le projecteur le refuse : la commande
   est refusée, rien n'est envoyé ; réessayez une fois en veille.
 - **Veille** n'est envoyé que projecteur allumé. Déjà en veille ou en
   refroidissement : rien à faire. En **préchauffage**, le projecteur
-  l'ignore : l'intégration l'envoie dès qu'il est allumé (dans les 3
-  minutes) ; un appui sur Allumer entre-temps l'annule. La veille n'est
-  jamais refusée faute d'avoir pu lire l'état : elle est alors envoyée
-  quand même, et passe avant les autres commandes en attente.
+  l'ignore : Gladys reçoit la réponse « warming up: standby will be sent
+  once it is on, nothing sent yet » (la veille sera envoyée dès qu'il est
+  allumé, rien n'est encore envoyé), et l'intégration l'envoie dès qu'il est
+  allumé (vérifié toutes les 5 secondes, dans les 3 minutes, même après une
+  lecture ratée) ; un appui sur Allumer entre-temps l'annule. La veille
+  n'est jamais refusée faute d'avoir pu lire l'état : elle est alors envoyée
+  quand même. Elle passe avant les autres commandes en attente, et n'attend
+  jamais derrière une lecture de fond ni derrière la confirmation lente d'un
+  changement d'entrée ou de mode d'image (cette connexion est fermée ; le
+  changement reste « envoyée, sans confirmation »).
 - **Entrée**, **mode d'image** et **touche** ne sont envoyés que projecteur
   allumé.
 
@@ -91,7 +99,9 @@ données, ni dans ses journaux, statuts ou messages d'erreur.
 Un **mot de passe refusé** arrête les essais vers ce projecteur : le statut
 de l'intégration l'indique, et le mot de passe n'est réessayé qu'à
 l'enregistrement de la configuration, ou 30 minutes plus tard (jamais en
-boucle). Corrigez-le dans le menu Réseau du projecteur ou dans la
+boucle). Un projecteur qui ferme la connexion ou se tait après avoir refusé
+un mot de passe compte aussi comme un refus. Corrigez-le dans le menu Réseau
+du projecteur ou dans la
 configuration, puis enregistrez.
 
 ## Bouton de la configuration
