@@ -58,9 +58,12 @@ inconnu de l'intégration n'en propose aucun.
 
 ## Commandes
 
-L'adresse MAC et l'état de marche sont relus sur le projecteur juste avant
-chaque commande (un autre projecteur à l'adresse : rien n'est envoyé, et
-l'adresse est oubliée) :
+L'état de marche est relu sur le projecteur juste avant chaque commande,
+puis son adresse MAC s'il l'a déjà donnée dans cet état (un autre projecteur
+à l'adresse : rien n'est envoyé, et l'adresse est oubliée). Chaque lecture
+de fond vérifie aussi la MAC. Seule une adresse MAC valide d'un autre
+projecteur compte : un projecteur qui ne donne pas sa MAC en veille, ou des
+zéros, garde son adresse et peut toujours être allumé.
 
 - **Allumer** n'est envoyé qu'en veille. Déjà allumé ou en préchauffage :
   rien à faire. En **refroidissement**, le projecteur le refuse : la commande

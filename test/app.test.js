@@ -618,20 +618,69 @@ test('I5 another projector at the address between two rounds: nothing published 
   assert.equal(other.ops().length, 0);
 });
 
-test('I5 a command checks the MAC in its own session', async (t) => {
+test('I5 a command checks the MAC in its own session (in a state where it answered it)', async (t) => {
   const { gladys, app } = await setup(t, { fakeOptions: { power: '1' } });
   const device = await createDevice(gladys);
-  const other = await startFakeProjector({ mac: 'AABBCCDDEEFF', power: '0' });
+  const other = await startFakeProjector({ mac: 'AABBCCDDEEFF', power: '1' });
   t.after(() => other.close());
   app.data.projectors[MAC_ID].port = other.port;
-  for (const key of ['power_on', 'standby']) {
-    const ack = await press(gladys, device, key);
+  for (const key of ['input', 'standby']) {
+    const ack = await press(gladys, device, key, key === 'input' ? 'hdmi2' : 1);
     assert.equal(ack.success, false, key);
     assert.match(ack.error, /another projector answers at its address|address unknown/);
     assert.match(ack.error, /nothing sent/);
   }
   assert.equal(other.ops().length, 0);
   assert.equal(app.data.projectors[MAC_ID].host, '');
+});
+
+// --- Review 2 ------------------------------------------------------------------------
+
+for (const answer of ['000000000000', 'xx']) {
+  test(`R1 LSMA "${answer}" in standby: address kept, state published, Power on sent`, async (t) => {
+    const { gladys, fake, app } = await setup(t, { fakeOptions: { power: '1' } });
+    const device = await createDevice(gladys);
+    fake.power = '0';
+    fake.mac = answer;
+    await app.poll();
+    assert.equal(app.data.projectors[MAC_ID].host, '127.0.0.1');
+    assert.equal(gladys.fake.lastState(id('power_status')), 'Standby');
+    const ack = await press(gladys, device, 'power_on');
+    assert.equal(ack.success, true, ack.error);
+    assert.deepEqual(fake.ops().at(-1), { kind: 'op', code: 'PW', value: '1' });
+  });
+}
+
+test('R1 LSMA silent in standby: state published, Power on sent', async (t) => {
+  const { gladys, fake, app } = await setup(t, { fakeOptions: { power: '0' } });
+  const device = await createDevice(gladys);
+  // It answered its MAC in standby once; now LSMA goes silent, with no round
+  // in between: the command tries it, then again without it.
+  fake.refSilent = { LSMA: 'never' };
+  const first = await press(gladys, device, 'power_on');
+  assert.equal(first.success, true, first.error);
+  assert.deepEqual(fake.ops().at(-1), { kind: 'op', code: 'PW', value: '1' });
+  await waitFor(() => fake.power === '1', 'on');
+  fake.power = '0';
+  await app.poll();
+  assert.equal(app.data.projectors[MAC_ID].host, '127.0.0.1');
+  assert.equal(gladys.fake.lastState(id('power_status')), 'Standby');
+  const second = await press(gladys, device, 'power_on');
+  assert.equal(second.success, true, second.error);
+  assert.equal(fake.ops().filter((o) => o.value === '1').length, 2);
+});
+
+test('R2 a standby does not wait behind a probe', async (t) => {
+  const { gladys, fake, app } = await setup(t, { fakeOptions: { power: '1' } });
+  const device = await createDevice(gladys);
+  fake.refSilent = { LSMA: 'never' };
+  const probe = app.identify({ host: '127.0.0.1', port: fake.port }).catch(() => {});
+  await settle(30);
+  fake.refSilent = {};
+  const standby = await press(gladys, device, 'standby');
+  assert.equal(standby.success, true, standby.error);
+  assert.deepEqual(fake.ops().at(-1), { kind: 'op', code: 'PW', value: '0' });
+  await probe;
 });
 
 test('M1 a reconnection keeps the round timer; M2 two starts load /data once', async (t) => {

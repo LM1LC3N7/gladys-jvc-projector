@@ -47,6 +47,9 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, m
 /** Queue priorities: standby first, then the other commands, then the background reads. */
 const PRIORITY = Object.freeze({ STANDBY: 0, COMMAND: 1, BACKGROUND: 2 });
 
+/** Background sessions (reads, probes, checks): a standby may close them. */
+const PREEMPTIBLE = Object.freeze({ preemptible: true });
+
 /** Runs `task` over `items`, `limit` at a time, results in order. */
 async function mapLimit(items, limit, task) {
   const results = new Array(items.length);
@@ -115,6 +118,8 @@ export class JvcApp {
     this.deferred = new Map();
     /** addressKeys with a background read queued */
     this.readQueued = new Set();
+    /** mac -> power states in which it answered its own MAC (memory only) */
+    this.macReadable = new Map();
     /** addressKey -> the session open there (`preemptible`: a standby may close it) */
     this.activeSessions = new Map();
     this.loading = undefined;
@@ -537,14 +542,19 @@ export class JvcApp {
     return this.enqueue(
       key,
       () =>
-        this.withSession(address, this.now() + this.timings.pollBudget, async (session) => {
-          const model = parseModel(await session.ref(CODES.MODEL));
-          const mac = parseMac(await session.ref(CODES.MAC));
-          if (!mac) {
-            throw new JvcError(ERROR_KINDS.PROTOCOL, 'MAC address unreadable');
-          }
-          return { mac, model };
-        }),
+        this.withSession(
+          address,
+          this.now() + this.timings.pollBudget,
+          async (session) => {
+            const model = parseModel(await session.ref(CODES.MODEL));
+            const mac = parseMac(await session.ref(CODES.MAC));
+            if (!mac) {
+              throw new JvcError(ERROR_KINDS.PROTOCOL, 'MAC address unreadable');
+            }
+            return { mac, model };
+          },
+          PREEMPTIBLE,
+        ),
       PRIORITY.BACKGROUND,
     );
   }
@@ -642,12 +652,6 @@ export class JvcApp {
         address,
         this.now() + this.timings.pollBudget,
         async (session) => {
-          // Every read starts with the MAC: the address must still be this
-          // projector's (DHCP), whatever was read before.
-          const mac = parseMac(await session.ref(CODES.MAC));
-          if (mac !== projector.mac) {
-            return { otherMac: mac };
-          }
           const power = parsePower(await session.ref(CODES.POWER));
           if (!power) {
             this.warnOnce(
@@ -655,6 +659,13 @@ export class JvcApp {
               `${deviceName(projector)}: unknown power state`,
             );
             return undefined;
+          }
+          // Then the MAC, read softly: the address must still be this
+          // projector's (DHCP). Only a valid, different MAC proves another
+          // projector; no answer or an unreadable one never loses the power.
+          const raw = await this.soft(() => session.ref(CODES.MAC));
+          if (this.noteMac(projector, power, raw) === 'other') {
+            return { otherMac: true };
           }
           const result = { power };
           if (power === POWER.ON) {
@@ -703,10 +714,53 @@ export class JvcApp {
     this.probes.delete(addressKey(address));
   }
 
-  /** Reads the MAC in a command session; another projector there: nothing sent. */
-  async checkMac(session, projector, address, until) {
-    const mac = parseMac(await session.ref(CODES.MAC, { until }));
-    if (mac !== projector.mac) {
+  /**
+   * What a MAC answer (raw, or undefined when unanswered) says, in power
+   * state `power`: 'same', 'other' (a valid, different MAC: another
+   * projector) or 'unknown' (no proof either way). Remembers in which power
+   * states this projector answers its MAC.
+   */
+  noteMac(projector, power, raw) {
+    const states = this.macReadable.get(projector.mac) ?? new Set();
+    this.macReadable.set(projector.mac, states);
+    const mac = parseMac(raw);
+    if (mac === projector.mac) {
+      states.add(power);
+      return 'same';
+    }
+    states.delete(power);
+    if (mac) {
+      return 'other';
+    }
+    this.warnOnce(
+      `mac:${projector.mac}:${power}`,
+      `${deviceName(projector)}: MAC address not readable (${power}), its identity not checked then`,
+    );
+    return 'unknown';
+  }
+
+  /**
+   * In a command session, after the power read: the MAC is read only when
+   * this projector answered it before in this power state (a projector
+   * silent on LSMA in standby must still be powered on); the last
+   * background read checked it otherwise. Another projector: nothing sent.
+   */
+  async checkMac(session, projector, address, until, power) {
+    if (!this.macReadable.get(projector.mac)?.has(power)) {
+      return;
+    }
+    let raw;
+    try {
+      raw = await session.ref(CODES.MAC, { until });
+    } catch (err) {
+      // Not answered this time: not asked again until a background read
+      // sees it; the command is tried again without it (never blocked by it).
+      this.noteMac(projector, power, undefined);
+      const unread = new JvcError(err.kind, `MAC address not read (${err.message})`);
+      unread.macUnread = true;
+      throw unread;
+    }
+    if (this.noteMac(projector, power, raw) === 'other') {
       this.addressLost(projector, address);
       this.publishStates(projector).catch(() => {});
       this.updateStatus().catch(() => {});
@@ -811,18 +865,34 @@ export class JvcApp {
     if (!projector.host) {
       return;
     }
-    await this.withSession(
-      this.addressOf(projector),
-      this.now() + this.timings.commandBudget,
-      async (session) => {
-        await this.checkMac(session, projector, this.addressOf(projector), session.deadline);
-        const power = parsePower(await session.ref(CODES.POWER));
-        if (power === POWER.ON) {
-          await session.op(CODES.POWER, POWER_WRITE.off);
-          this.logger.info(`${deviceName(projector)}: deferred standby sent`);
-        }
-      },
-    );
+    const attempt = () =>
+      this.withSession(
+        this.addressOf(projector),
+        this.now() + this.timings.commandBudget,
+        async (session) => {
+          const power = parsePower(await session.ref(CODES.POWER));
+          await this.checkMac(
+            session,
+            projector,
+            this.addressOf(projector),
+            session.deadline,
+            power,
+          );
+          if (power === POWER.ON) {
+            await session.op(CODES.POWER, POWER_WRITE.off);
+            this.logger.info(`${deviceName(projector)}: deferred standby sent`);
+          }
+        },
+      );
+    try {
+      await attempt();
+    } catch (err) {
+      if (!err.macUnread) {
+        throw err;
+      }
+      // The MAC did not answer (that session closed): once more, without it.
+      await attempt();
+    }
     this.recheck(projector);
   }
 
@@ -929,8 +999,9 @@ export class JvcApp {
    */
   async readPowerBefore(session, started, projector, address) {
     const until = Math.min(started + this.timings.commandBudget, this.now() + this.timings.preRead);
-    await this.checkMac(session, projector, address, until);
-    return parsePower(await session.ref(CODES.POWER, { until }));
+    const power = parsePower(await session.ref(CODES.POWER, { until }));
+    await this.checkMac(session, projector, address, until, power);
+    return power;
   }
 
   async command(projector, key, code, started, context) {
@@ -943,18 +1014,28 @@ export class JvcApp {
     const address = this.addressOf(projector);
     const deadline = started + this.timings.commandBudget;
     if (key !== FEATURES.STANDBY) {
-      return this.withSession(address, deadline, async (session) => {
-        let power;
-        try {
-          power = await this.readPowerBefore(session, started, projector, address);
-        } catch (err) {
-          if (err.lost) {
-            throw err;
+      const attempt = () =>
+        this.withSession(address, deadline, async (session) => {
+          let power;
+          try {
+            power = await this.readPowerBefore(session, started, projector, address);
+          } catch (err) {
+            if (err.lost || err.macUnread) {
+              throw err;
+            }
+            throw new JvcError(err.kind, `Power state not read (${err.message})`);
           }
-          throw new JvcError(err.kind, `Power state not read (${err.message})`);
+          return this.act(projector, session, key, code, power, context);
+        });
+      try {
+        return await attempt();
+      } catch (err) {
+        if (!err.macUnread) {
+          throw err;
         }
-        return this.act(projector, session, key, code, power, context);
-      });
+        // The MAC did not answer: once more in a new session, without it.
+        return attempt();
+      }
     }
     // Standby is never refused because the state could not be read (or the
     // handshake went wrong): it is then sent in a new session, time allowing.
@@ -1101,14 +1182,19 @@ export class JvcApp {
         const outcome = await this.enqueue(
           this.keyOf(p),
           () =>
-            this.withSession(this.addressOf(p), this.now() + this.timings.pollBudget, async (s) => {
-              const power = parsePower(await s.ref(CODES.POWER));
-              const lightTime =
-                power === POWER.ON
-                  ? parseLightTime(await this.soft(() => s.ref(CODES.LIGHT_TIME)))
-                  : undefined;
-              return { power, lightTime };
-            }),
+            this.withSession(
+              this.addressOf(p),
+              this.now() + this.timings.pollBudget,
+              async (s) => {
+                const power = parsePower(await s.ref(CODES.POWER));
+                const lightTime =
+                  power === POWER.ON
+                    ? parseLightTime(await this.soft(() => s.ref(CODES.LIGHT_TIME)))
+                    : undefined;
+                return { power, lightTime };
+              },
+              PREEMPTIBLE,
+            ),
           PRIORITY.BACKGROUND,
         );
         return T.checkLine(label, outcome);

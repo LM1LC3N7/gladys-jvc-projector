@@ -55,9 +55,12 @@ not know offers no picture mode.
 
 ## Commands
 
-The MAC address and the power state are read from the projector just before
-each command (another projector at the address: nothing is sent, and the
-address is forgotten):
+The power state is read from the projector just before each command, then
+its MAC address when it answered it before in that state (another projector
+at the address: nothing is sent, and the address is forgotten). Every
+background read checks the MAC too. Only a valid MAC address of another
+projector counts: a projector that does not answer its MAC in standby, or
+answers zeros, keeps its address and can still be powered on.
 
 - **Power on** is only sent in standby. Already on or warming up: nothing
   to do. While **cooling down**, the projector refuses it: the command is

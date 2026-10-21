@@ -143,12 +143,17 @@ export class Session {
       return Promise.reject(this.failure);
     }
     if (timeout <= 0) {
-      return Promise.reject(new JvcError(ERROR_KINDS.TIMEOUT, `No time left to read ${what}`));
+      const err = new JvcError(ERROR_KINDS.TIMEOUT, `No time left to read ${what}`);
+      err.capped = true;
+      return Promise.reject(err);
     }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending = undefined;
-        reject(new JvcError(ERROR_KINDS.TIMEOUT, `No ${what} from the projector in time`));
+        const err = new JvcError(ERROR_KINDS.TIMEOUT, `No ${what} from the projector in time`);
+        // Cut short by the caller's budget: not a silence of the projector.
+        err.capped = timeout < this.readTimeout;
+        reject(err);
       }, timeout);
       this.pending = { bytes, resolve, reject, timer };
       this.serve();
@@ -341,9 +346,14 @@ export async function openSession({
     throw new JvcError(ERROR_KINDS.AUTH, refusedMessage(password));
   } catch (err) {
     session.close();
-    if (nak && err.kind !== ERROR_KINDS.AUTH) {
-      // A PJNAK was received: whatever ends the handshake after it (closed,
-      // silence, garbage) is a refusal, never a busy projector tried again.
+    const refusalEnd =
+      err.kind === ERROR_KINDS.CLOSED ||
+      err.kind === ERROR_KINDS.PROTOCOL ||
+      (err.kind === ERROR_KINDS.TIMEOUT && !err.capped);
+    if (nak && refusalEnd) {
+      // A PJNAK was received: what ends the handshake after it (closed, a
+      // full silence, garbage) is a refusal, never a busy projector tried
+      // again. A budget running out is not (the caller had no time left).
       throw new JvcError(ERROR_KINDS.AUTH, refusedMessage(password));
     }
     if (err.kind === ERROR_KINDS.CLOSED && session.buffer.length === 0) {

@@ -44,6 +44,13 @@ the notes of the version's GitHub Release.
 - The MAC address is read at every background read and before every
   command: a projector whose address went to another one is never read nor
   commanded there.
+- A MAC address unreadable, all zeros or unanswered (in standby, for
+  example) no longer passes for another projector: the address is kept, the
+  power state still published and Power on still sent. Only a valid,
+  different MAC clears the address. The power is read before the MAC.
+- A standby no longer waits behind a probe or "Check the projectors".
+- A handshake cut short by the command budget after a password refusal is
+  no longer recorded as a refused password.
 - Reconnections to Gladys no longer restart the round timer; two starts at
   once load `/data` once; an all-zero, broadcast or multicast MAC is no
   identity; a refused password for an address no longer in use no longer

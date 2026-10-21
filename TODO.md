@@ -163,5 +163,22 @@ up to date at the end of every milestone.
     "standby will be sent once it is on, nothing sent yet" (exact, not a
     success). M5: refusals of addresses neither typed nor of a created
     projector are purged at each status update.
+- (Review 2, 2026-10-21) Fixes:
+  - R1: only a valid MAC different from the projector's proves another
+    projector; an unreadable, refused (zeros, broadcast, multicast) or
+    unanswered `LSMA` is no proof (one warning per projector and power
+    state). Background reads: `PW` first, then `LSMA` read softly, so a
+    silent `LSMA` never loses the power state. Commands: `LSMA` is read
+    after `PW` only when this projector answered it before in that power
+    state (`macReadable`, memory only); if it then does not answer, the
+    state is forgotten and the command is tried again at once in a new
+    session without it: a silent `LSMA` never prevents Power on. Known
+    limit: in a power state where the MAC never answered, the identity
+    rests on the last background read (one interval at most).
+  - R2: probes and "Check the projectors" sessions are preemptible by a
+    standby, as the background reads.
+  - R3: after a `PJNAK`, only a closed socket, garbage or a full
+    `readTimeout` silence is a refusal; a read cut short by the caller's
+    budget is a timeout (no 30-minute stop).
 - No network discovery: JVC projectors announce nothing pyjvcprojector or
   Home Assistant browses; the addresses are typed.
