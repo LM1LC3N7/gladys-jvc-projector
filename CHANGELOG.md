@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-21
+
 ### Added
 
 - JVC D-ILA projectors over their local network protocol (TCP 20554), without
@@ -62,4 +64,5 @@ the notes of the version's GitHub Release.
   of 64 characters at most) and matched against the expected header; only
   MAC addresses are keys in `/data`, and its tables have no prototype.
 
-[Unreleased]: https://github.com/LM1LC3N7/gladys-jvc-projector/commits/main
+[Unreleased]: https://github.com/LM1LC3N7/gladys-jvc-projector/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-jvc-projector/releases/tag/v0.1.1
