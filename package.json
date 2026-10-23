@@ -1,6 +1,6 @@
 {
   "name": "gladys-jvc-projector",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Gladys Assistant external integration for JVC D-ILA projectors (power on, standby, input, picture mode, remote keys, lamp / laser hours), over their local network protocol (TCP 20554). Unofficial, not affiliated with JVCKENWOOD.",
   "type": "module",

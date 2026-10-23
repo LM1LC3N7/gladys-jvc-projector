@@ -6,8 +6,8 @@
     "en": "JVC D-ILA projectors on the local network: power on, standby, input, picture mode, lamp hours.",
     "fr": "Vidéoprojecteurs JVC D-ILA en local : marche, veille, entrée, mode d'image, heures de lampe."
   },
-  "version": "0.1.1",
-  "docker_image": "ghcr.io/lm1lc3n7/gladys-jvc-projector:0.1.1",
+  "version": "0.1.2",
+  "docker_image": "ghcr.io/lm1lc3n7/gladys-jvc-projector:0.1.2",
   "gladys_version": ">=5.1.0",
   "cover_image": "https://raw.githubusercontent.com/LM1LC3N7/gladys-jvc-projector/main/cover.png",
   "categories": ["multimedia"],
